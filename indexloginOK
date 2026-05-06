@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<meta name="theme-color" content="#0f172a"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<title>CoachTennis IA</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'DM Sans',sans-serif;background:#f1f5f9;color:#0f172a;min-height:100vh}
+input,select,textarea{font-family:inherit;font-size:14px}
+button{font-family:inherit;cursor:pointer;border:none;background:none}
+textarea{resize:none}
+.mono{font-family:'DM Mono',monospace}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:99px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo,useEffect,useRef} = React;
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ⚙️  CONFIGURACIÓN — reemplazá estos dos valores
+  con los de tu proyecto Supabase
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const SUPABASE_URL  = "https://igqlsofrczrydllubhwq.supabase.co/rest/v1/";
+const SUPABASE_URL  = "https://igqlsofrczrydllubhwq.supabase.co";
+const SUPABASE_ANON = "sb_publishable_RHmTWwyUrzbrELMG5ibz0A_lduESQyc";
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+/* ── Constants ── */
+const SURFACES =["Arcilla","Dura","Césped","Indoor"];
+const STYLES   =["Agresivo de fondo","Contragolpeador","Todo-terreno","Saque y volea","Cortador / Slice"];
+const HANDS    =["Diestro","Zurdo"];
+const STRENGTHS=["Derecha","Revés","Saque","Volea","Físico","Topspin","Slice","Dejada","Mentalidad"];
+const WEAKNESSES=["Revés","Derecha","Movimiento","Red","Segundo saque","Altas (topspin)","Bajas (slice)","Presión","Cansancio","Dejadas"];
+const LEVELS   =["Principiante","Intermedio","Avanzado","Competitivo","Profesional"];
+const OBS=[
+{key:"missBH",   label:"Falla revés",         icon:"↩"},
+{key:"missFH",   label:"Falla derecha",        icon:"↪"},
+{key:"weak2nd",  label:"2do saque débil",      icon:"↓"},
+{key:"hatesNet", label:"Evita la red",         icon:"✕"},
+{key:"strugglesHigh",label:"Sufre topspin alto",icon:"↑"},
+{key:"slowMove", label:"Lento de piernas",     icon:"~"},
+{key:"tightPressure",label:"Se tensa presión", icon:"!"},
+{key:"shortBall",label:"Pelotas cortas",       icon:"◉"},
+];
+const TABS=["Preparación","En Partido","Coach IA","Historial"];
+const emptyObs =()=>Object.fromEntries(OBS.map(o=>[o.key,0]));
+const defScore =()=>({sets:[],current:{my:0,opp:0}});
+const defProfile=()=>({
+myHand:"Diestro",myStyle:"Agresivo de fondo",
+myStrengths:["Derecha","Topspin"],myLevel:"Competitivo",
+oppName:"",oppHand:"Zurdo",oppStyle:"Contragolpeador",
+oppWeak:["Revés","Segundo saque"],oppLevel:"Competitivo",
+surface:"Arcilla",tournament:"",round:"",
+score:defScore(),obs:emptyObs(),notes:"",
+aiAdvice:null,date:new Date().toISOString().split("T")[0],
+});
+
+/* ── Style helpers ── */
+const S={
+card:{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",padding:"16px"},
+label:{fontSize:11,fontWeight:600,color:"#94a3b8",textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6},
+input:{width:"100%",border:"1px solid #e2e8f0",borderRadius:10,padding:"9px 12px",fontSize:14,color:"#0f172a",background:"#fff",outline:"none"},
+select:{width:"100%",border:"1px solid #e2e8f0",borderRadius:10,padding:"9px 12px",fontSize:14,color:"#0f172a",background:"#fff",outline:"none",appearance:"none",
+backgroundImage:"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%2394a3b8' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E\")",
+backgroundRepeat:"no-repeat",backgroundPosition:"right 10px center"},
+};
+
+/* ── UI Atoms ── */
+const Label=({children})=><span style={S.label}>{children}</span>;
+const Field=({label,children})=><div>{label&&<Label>{label}</Label>}{children}</div>;
+
+const InputF=({label,value,onChange,placeholder,type="text"})=>(
+<Field label={label}>
+<input style={S.input} type={type} value={value} placeholder={placeholder}
+onChange={e=>onChange(e.target.value)}
+onFocus={e=>e.target.style.borderColor="#6366f1"}
+onBlur={e=>e.target.style.borderColor="#e2e8f0"}/>
+</Field>
+);
+const SelectF=({label,value,setValue,options})=>(
+<Field label={label}>
+<select style={S.select} value={value} onChange={e=>setValue(e.target.value)}>
+{options.map(o=><option key={o}>{o}</option>)}
+</select>
+</Field>
+);
+const MultiCheck=({options,values,onChange})=>(
+<div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+{options.map(opt=>{
+const on=values.includes(opt);
+return <button key={opt} onClick={()=>onChange(on?values.filter(v=>v!==opt):[...values,opt])}
+style={{border:`1.5px solid ${on?"#0f172a":"#e2e8f0"}`,borderRadius:20,padding:"5px 12px",
+fontSize:13,fontWeight:500,background:on?"#0f172a":"#fff",color:on?"#fff":"#475569",cursor:"pointer"}}>{opt}</button>;
+})}
+</div>
+);
+const Chip=({children,color="gray"})=>{
+const c={gray:{bg:"#f1f5f9",text:"#475569"},green:{bg:"#dcfce7",text:"#166534"},
+red:{bg:"#fee2e2",text:"#991b1b"},blue:{bg:"#eff6ff",text:"#1d4ed8"},amber:{bg:"#fef3c7",text:"#92400e"}};
+const s=c[color]||c.gray;
+return <span style={{fontSize:11,fontWeight:600,padding:"3px 8px",borderRadius:20,background:s.bg,color:s.text,display:"inline-flex",alignItems:"center",gap:3}}>{children}</span>;
+};
+const Btn=({onClick,children,variant="default",size="md",disabled,style:sx={}})=>{
+const [hov,setHov]=useState(false);
+const sz={sm:{padding:"6px 14px",fontSize:12},md:{padding:"9px 18px",fontSize:13},lg:{padding:"12px 24px",fontSize:15}};
+const vr={
+default:{background:hov?"#1e293b":"#0f172a",color:"#fff"},
+outline:{background:hov?"#f8fafc":"#fff",color:"#0f172a",border:"1px solid #e2e8f0"},
+ghost:{background:hov?"#f1f5f9":"transparent",color:"#64748b"},
+green:{background:hov?"#047857":"#059669",color:"#fff"},
+danger:{background:hov?"#b91c1c":"#dc2626",color:"#fff"},
+ai:{background:`linear-gradient(135deg,${hov?"#6d28d9,#4338ca":"#7c3aed,#4f46e5"})`,color:"#fff",boxShadow:"0 4px 14px rgba(99,102,241,.3)"},
+};
+return <button onClick={disabled?undefined:onClick} disabled={disabled}
+onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+style={{border:"none",borderRadius:11,fontWeight:500,fontFamily:"inherit",cursor:disabled?"not-allowed":"pointer",
+display:"inline-flex",alignItems:"center",gap:6,justifyContent:"center",transition:"all .15s",
+opacity:disabled?.4:1,...sz[size],...vr[variant],...sx}}>{children}</button>;
+};
+const Card=({children,style:sx={}})=><div style={{...S.card,...sx}}>{children}</div>;
+const STitle=({children})=><div style={{fontSize:15,fontWeight:600,color:"#0f172a",marginBottom:12}}>{children}</div>;
+
+/* ── Auth Screen ── */
+function AuthScreen({onAuth}){
+const [mode,setMode]=useState("login"); // login | register
+const [name,setName]=useState("");
+const [email,setEmail]=useState("");
+const [pass,setPass]=useState("");
+const [err,setErr]=useState("");
+const [loading,setLoading]=useState(false);
+const [done,setDone]=useState(false);
+
+const handle=async()=>{
+setErr("");setLoading(true);
+if(mode==="register"){
+const {error}=await sb.auth.signUp({email,password:pass,options:{data:{full_name:name}}});
+if(error){setErr(error.message);setLoading(false);return;}
+setDone(true);
+} else {
+const {data,error}=await sb.auth.signInWithPassword({email,password:pass});
+if(error){setErr("Email o contraseña incorrectos.");setLoading(false);return;}
+onAuth(data.user);
+}
+setLoading(false);
+};
+
+if(done) return(
+<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+<Card style={{maxWidth:380,width:"100%",textAlign:"center",padding:32}}>
+<div style={{fontSize:40,marginBottom:12}}>📧</div>
+<div style={{fontWeight:600,fontSize:16,marginBottom:8}}>Revisá tu email</div>
+<div style={{fontSize:13,color:"#64748b"}}>Te enviamos un link de confirmación a <strong>{email}</strong>. Hacé click en él y luego iniciá sesión.</div>
+<Btn onClick={()=>setDone(false)} variant="outline" size="sm" style={{marginTop:16}}>Volver al login</Btn>
+</Card>
+</div>
+);
+
+return(
+<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"#f1f5f9"}}>
+<div style={{maxWidth:380,width:"100%"}}>
+<div style={{textAlign:"center",marginBottom:24}}>
+<div style={{width:52,height:52,borderRadius:14,background:"#0f172a",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:24,marginBottom:12}}>🎾</div>
+<div style={{fontSize:22,fontWeight:700}}>CoachTennis IA</div>
+<div style={{fontSize:13,color:"#94a3b8",marginTop:4}}>Tu coach táctico personal</div>
+</div>
+<Card style={{padding:24}}>
+<div style={{display:"flex",borderRadius:10,overflow:"hidden",border:"1px solid #e2e8f0",marginBottom:20}}>
+{["login","register"].map(m=>(
+<button key={m} onClick={()=>setMode(m)}
+style={{flex:1,padding:"9px 0",fontSize:13,fontWeight:500,cursor:"pointer",border:"none",
+background:mode===m?"#0f172a":"#fff",color:mode===m?"#fff":"#64748b"}}>
+{m==="login"?"Iniciar sesión":"Registrarse"}
+</button>
+))}
+</div>
+<div style={{display:"flex",flexDirection:"column",gap:12}}>
+{mode==="register"&&<InputF label="Nombre" value={name} onChange={setName} placeholder="Tu nombre"/>}
+<InputF label="Email" value={email} onChange={setEmail} placeholder="tu@email.com" type="email"/>
+<InputF label="Contraseña" value={pass} onChange={setPass} placeholder="Mínimo 6 caracteres" type="password"/>
+{err&&<div style={{fontSize:12,color:"#dc2626",background:"#fee2e2",padding:"8px 12px",borderRadius:8}}>{err}</div>}
+<Btn onClick={handle} disabled={loading} style={{width:"100%",marginTop:4}}>
+{loading?"Cargando...":(mode==="login"?"Entrar":"Crear cuenta")}
+</Btn>
+</div>
+</Card>
+<div style={{textAlign:"center",marginTop:12,fontSize:11,color:"#94a3b8"}}>
+Tus datos se guardan de forma segura y privada.
+</div>
+</div>
+</div>
+);
+}
+
+/* ── Score Tracker ── */
+const PTS=["0","15","30","40","Ad"];
+function ScoreTracker({score,setScore}){
+const [game,setGame]=useState({my:0,opp:0});
+const [serving,setServing]=useState("my");
+const ptLabel=(side)=>{
+const me=side==="my"?game.my:game.opp, them=side==="my"?game.opp:game.my;
+if(me<3||them<3)return PTS[me]||"0";
+if(me===them)return "40";
+return me>them?(side==="my"?"Ad":""):(side==="my"?"":"Ad");
+};
+const winGame=(who)=>{
+const other=who==="my"?"opp":"my";
+const cur={...(score.current||{my:0,opp:0})};
+cur[who]=(cur[who]||0)+1;
+const w=cur[who],l=cur[other]||0;
+setGame({my:0,opp:0});
+setServing(s=>s==="my"?"opp":"my");
+if((w>=6&&w-l>=2)||w===7){
+setScore(prev=>({...prev,sets:[...(prev.sets||[]),{my:cur.my,opp:cur.opp,winner:who}],current:{my:0,opp:0}}));
+} else {
+setScore(prev=>({...prev,current:cur}));
+}
+};
+const awardPoint=(who)=>{
+const myP=who==="my"?game.my+1:game.my, opP=who==="opp"?game.opp+1:game.opp;
+const deuce=myP>=3&&opP>=3, diff=myP-opP;
+if(deuce&&Math.abs(diff)>=2){winGame(diff>0?"my":"opp");return;}
+if(!deuce&&(myP>=4||opP>=4)){winGame(myP>opP?"my":"opp");return;}
+setGame({my:myP,opp:opP});
+};
+const sets=score.sets||[], cur=score.current||{my:0,opp:0};
+return(
+<div>
+<div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
+{sets.map((s,i)=>(
+<div key={i} className="mono" style={{background:s.winner==="my"?"#dcfce7":"#fee2e2",borderRadius:8,padding:"4px 10px",fontSize:13,fontWeight:500,color:s.winner==="my"?"#166534":"#991b1b"}}>{s.my}–{s.opp}</div>
+))}
+<div className="mono" style={{background:"#0f172a",color:"#fff",borderRadius:8,padding:"4px 10px",fontSize:13,fontWeight:500}}>{cur.my}–{cur.opp}</div>
+{sets.length===0&&<span style={{fontSize:12,color:"#94a3b8"}}>Sin sets jugados</span>}
+</div>
+<div style={{display:"flex",alignItems:"center",gap:20,marginBottom:12}}>
+{["my","opp"].map((side,i)=>(
+<React.Fragment key={side}>
+{i===1&&<span style={{color:"#cbd5e1",fontSize:22,alignSelf:"center",paddingBottom:24}}>–</span>}
+<div style={{textAlign:"center"}}>
+<div style={{fontSize:11,color:"#94a3b8",marginBottom:4,display:"flex",alignItems:"center",gap:4}}>
+{side==="my"?"Yo":"Rival"}{serving===side&&<span style={{color:"#f59e0b",fontSize:9}}>●</span>}
+</div>
+<div className="mono" style={{fontSize:36,fontWeight:600,lineHeight:1,width:52,textAlign:"center"}}>{ptLabel(side)||<span style={{color:"#e2e8f0"}}>–</span>}</div>
+<div style={{marginTop:6}}><Btn onClick={()=>awardPoint(side)} variant={side==="my"?"green":"danger"} size="sm">+1</Btn></div>
+</div>
+</React.Fragment>
+))}
+<div style={{marginLeft:"auto",display:"flex",flexDirection:"column",gap:4}}>
+<Btn onClick={()=>setGame({my:0,opp:0})} variant="ghost" size="sm">↺ Juego</Btn>
+<Btn onClick={()=>{setScore(defScore());setGame({my:0,opp:0});}} variant="ghost" size="sm">↺ Set</Btn>
+</div>
+</div>
+<div style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"#94a3b8"}}>
+Saque: <Btn onClick={()=>setServing(s=>s==="my"?"opp":"my")} variant="outline" size="sm">{serving==="my"?"Yo sirvo →":"← Rival sirve"}</Btn>
+</div>
+</div>
+);
+}
+
+/* ── Tactical Engine v2 ── */
+function buildAdvice(p){
+const {myHand,myStyle,myStrengths,myLevel,oppHand,oppStyle,oppWeak,oppLevel,surface,obs}=p;
+const iAmLefty=myHand==="Zurdo",oppIsLefty=oppHand==="Zurdo",sameHand=iAmLefty===oppIsLefty;
+const sFH=myStrengths.includes("Derecha"),sBH=myStrengths.includes("Revés");
+const sSv=myStrengths.includes("Saque"),sVol=myStrengths.includes("Volea");
+const sFit=myStrengths.includes("Físico"),sTop=myStrengths.includes("Topspin");
+const sSl=myStrengths.includes("Slice"),sDrop=myStrengths.includes("Dejada"),sMnd=myStrengths.includes("Mentalidad");
+const wBH=oppWeak.includes("Revés"),wFH=oppWeak.includes("Derecha");
+const wMov=oppWeak.includes("Movimiento"),wNet=oppWeak.includes("Red");
+const w2nd=oppWeak.includes("Segundo saque"),wHi=oppWeak.includes("Altas (topspin)");
+const wLow=oppWeak.includes("Bajas (slice)"),wPrs=oppWeak.includes("Presión");
+const wFit=oppWeak.includes("Cansancio"),wDrp=oppWeak.includes("Dejadas");
+const iAgg=myStyle==="Agresivo de fondo",iCtg=myStyle==="Contragolpeador";
+const iSnV=myStyle==="Saque y volea",iSlc=myStyle==="Cortador / Slice";
+const oCtg=oppStyle==="Contragolpeador",oAgg=oppStyle==="Agresivo de fondo",oSnV=oppStyle==="Saque y volea";
+const clay=surface==="Arcilla",hard=surface==="Dura",grass=surface==="Césped",indoor=surface==="Indoor";
+const fast=grass||indoor;
+const oppBHside=oppIsLefty?"lado ad (tu derecha)":"lado iguales (tu izquierda)";
+const oppFHside=oppIsLefty?"lado iguales (tu izquierda)":"lado ad (tu derecha)";
+const plan=[],patterns=[],serveReturn=[],inMatch=[],mental=[];
+const uniq=a=>[...new Set(a.filter(Boolean))];
+
+// Estrategia superficie
+if(clay){
+plan.push("Arcilla: la paciencia es táctica. Construí el punto, no busques el winner en el primer golpe.");
+if(iAgg) plan.push("Sé agresivo con criterio: esperá la pelota corta antes de atacar. En arcilla el rival tiene tiempo de recuperar.");
+if(iCtg) plan.push("Arcilla es tu superficie: variá alturas y direcciones, cansá al rival y esperá que cometa el error.");
+if(iSnV) plan.push("En arcilla subí solo con approach ganador. Nunca con tiro defensivo.");
+if(iSlc) plan.push("El slice en arcilla pierde efecto porque la pelota sube. Usalo para variar el ritmo, no como golpe principal.");
+}
+if(hard){
+plan.push("Pista dura: quien ataca primero tiene ventaja. Los errores no forzados se pagan caro.");
+if(iAgg) plan.push("Tu estilo agresivo es ideal aquí: presioná desde el inicio para marcar el tono del partido.");
+if(iCtg) plan.push("En dura necesitás agregar profundidad y velocidad. El contragolpe sin profundidad le da tiempo al rival para atacar.");
+if(iSnV) plan.push("Superficie favorable: rebote bajo facilita la volea. Subí con frecuencia tras primer saque ganador.");
+}
+if(grass){
+plan.push("Césped: puntos cortos, rebote bajo y rápido. Quien domine el saque y el primer golpe gana la mayoría de puntos.");
+plan.push("Priorizá el slice de revés bajo y cortado: se queda pegado al piso y fuerza errores de revés.");
+if(iCtg) plan.push("El contragolpe puro pierde efectividad en césped: el tiempo es muy corto. Buscá ser más proactivo y atacar el approach.");
+}
+if(indoor){
+plan.push("Indoor: condiciones rápidas. El saque vale mucho y el primer golpe determina el punto.");
+plan.push("La pelota viaja rápido: anticipá bien y buscá definir con menos golpes de lo habitual.");
+}
+// Estilos
+if(iAgg&&oCtg) plan.push("Rival contragolpeador: movelo de lado a lado y atacá solo cuando quede corta o débil. El contragolpeador vive de tu velocidad.");
+if(iAgg&&oAgg) plan.push("Rival también agresivo: quien tome la iniciativa primero gana. Buscá el centro de la pista desde el primer punto.");
+if(iCtg&&oAgg) plan.push("Contra agresivo: profundidad al centro (quita ángulos), variá alturas, esperá que sobre-pegue. Jugá al cuerpo cuando esté en posición agresiva.");
+if(iCtg&&oCtg) plan.push("Batalla de consistencia: quien cambie el ritmo primero y tome la red ganará los puntos clave. La dejada como sorpresa es clave.");
+if(iSnV) plan.push("Saque y volea: variá siempre la zona y el tipo de saque. Si el rival anticipa tu subida te pasará.");
+// Debilidades rival
+if(wBH&&wFH) plan.push("Debilidades en ambos lados: movelo constantemente de lado a lado para que ningún golpe sea cómodo.");
+else if(wBH){
+plan.push(`Revés débil del rival (${oppBHside}): construí todos los peloteos hacia ese lado. Objetivo: que pegue de revés el 70% del tiempo.`);
+if(!sameHand) plan.push("Al ser de distinta mano, tu cruzada natural va directo a su revés. Explotá esa diagonal todo el partido.");
+} else if(wFH){
+plan.push(`Derecha débil del rival (${oppFHside}): abrí con revés cruzado o centro y cambiá a su derecha cuando esté fuera de posición.`);
+}
+if(wMov&&wFit) plan.push("Es lento Y se cansa: jugá puntos largos con cambios de dirección. Dejada + fondo + dejada lo destruirán físicamente al tercer set.");
+else if(wMov) plan.push("Movimiento deficiente: alternos pelota larga al fondo con dejada corta. El cambio largo-corto es tu arma principal.");
+else if(wFit) plan.push("Se cansa físicamente: hacé puntos largos en los primeros sets. Al tercer set acelerá el ritmo y buscá winners.");
+if(wPrs) plan.push("Se tensa bajo presión: buscá llegar al 30-30 y break points con consistencia. Cuando llegues, subí el nivel y jugá más agresivo.");
+if(wNet) plan.push("Incómodo en la red: si sube, pásate con cruzada baja. Si nunca sube, usá dejadas para obligarlo a esa zona.");
+if(sFit&&clay) plan.push("Tu condición física es una ventaja en arcilla: jugá puntos largos a propósito y acelerá cuando el rival baje el nivel.");
+
+// Patrones
+if(sFH&&!oppIsLefty) patterns.push("INSIDE-OUT: derecha cruzada profunda al revés rival → si responde corto/centro, inside-in a su derecha vacía → si responde cruzado, repetí inside-out.");
+if(sFH&&oppIsLefty) patterns.push("CONTRA ZURDO: tu derecha cruzada va directo a su revés (lado iguales). Construí con esa diagonal y definí con paralela a su derecha cuando abras el campo.");
+if(sBH&&!iAmLefty) patterns.push("REVÉS CRUZADO: revés cruzado pesado → cuando responda corto, cambiá a paralelo de derecha ganador → si responde profundo cruzado, seguí construyendo.");
+if(sBH&&iAmLefty) patterns.push("REVÉS ZURDO: tu revés cruzado es tu mejor arma. Usalo para abrir el campo y definí con derecha paralela o cruzada según el hueco.");
+if(sTop&&wHi&&clay) patterns.push("TOPSPIN ALTO en arcilla: pelota con mucho topspin al hombro/revés rival → forzás golpe defensivo → avanzás y definís con volea o winner.");
+if(sTop&&wHi&&!clay) patterns.push("TOPSPIN ALTO: alterná topspin al hombro con pelota plana rápida al cuerpo. El cambio de altura Y velocidad genera errores.");
+if(sSl&&grass) patterns.push("SLICE EN CÉSPED: slice de revés bajo y cortado cruzado → la pelota se queda pegada al piso → el rival levanta débil → entrás y definís.");
+if(sSl&&wLow) patterns.push("SLICE CORTO: slice cruzado corto al revés → obligás a levantar débil → approach y cierre en la red antes de que recupere posición.");
+if(sDrop&&wMov) patterns.push("DEJADA TÁCTICA: 3 pelotas largas al fondo → cuando el rival retroceda, dejada corta al lado contrario → casi punto ganado.");
+if(sDrop&&wDrp) patterns.push("El rival sufre las dejadas: 2 pelotas largas → cuando esté cómodo atrás, dejada sin aviso. Máximo 3-4 veces por set.");
+if(sVol) patterns.push("APPROACH AL CUERPO: approach al cuerpo del rival → cerrá diagonal corta → volea ganadora al hueco. El approach al cuerpo le quita ángulo de passing.");
+if(sVol&&wNet) patterns.push("DROP & VOLLEY: dejada corta para obligarlo a subir incómodo → cuando llegue, lobbealo largo o pásate cruzado bajo.");
+if(oCtg&&sFH) patterns.push("CONTRA CONTRAGOLPEADOR: 2 derechas fuertes para sacarlo atrás → pelota corta con slice → dirección contraria. Rompé su ritmo cambiando velocidad Y largo.");
+if(oAgg&&sBH) patterns.push("CONTRA AGRESIVO EN RED: cuando suba, pásate cruzado bajo con el revés. Si viene con ángulo, probá el lob cruzado.");
+if(oSnV){
+patterns.push("CONTRA SAQUE Y VOLEA: devolución a los pies (pelota baja hacia su cuerpo) para forzar volea baja difícil. También lob si viene muy adentro.");
+patterns.push("Si siempre sube tras el saque: pegá rápido y bajo a su derecha (el lado más difícil de volear para un diestro).");
+}
+
+// Saque/devolución
+if(!oppIsLefty){
+serveReturn.push("SAQUE — Lado iguales: primer saque al T abre su revés. Lado ventaja: saque abierto a su derecha o al cuerpo para evitar que ataque con su mejor golpe.");
+if(wBH) serveReturn.push("Prioridad: T en el lado iguales → forzás su revés débil en la devolución. Usalo el 60% de los puntos importantes.");
+} else {
+serveReturn.push("SAQUE CONTRA ZURDO — Lado iguales: saque abierto hacia su derecha (la corre mucho). Lado ventaja: T al cuerpo o abierto a su revés.");
+if(wBH) serveReturn.push("Su revés (zurdo) está en el lado ventaja. Atacá con saque al cuerpo en ese lado para forzar una devolución débil.");
+}
+if(sSv) serveReturn.push("Tu saque es una fortaleza: variá entre T, cuerpo y abierto en cada game. Nunca la misma zona dos veces seguidas en puntos clave. En puntos decisivos, velocidad al T.");
+if(w2nd){
+serveReturn.push("DEVOLUCIÓN 2DO SAQUE — Su segundo saque es débil: avanzá 40-50 cm dentro de la línea y atacá profundo al centro o a su revés. Buscá ser el primero en atacar.");
+serveReturn.push("Si su segundo saque es lento: tomá la pelota de ascenso y abrí el campo con ángulo cruzado. No esperes a que caiga.");
+} else {
+serveReturn.push("DEVOLUCIÓN — El rival sirve bien: priorizá consistencia. Pelota profunda al centro (quita ángulos) y buscá tu oportunidad en el tercer golpe.");
+}
+if(fast) serveReturn.push("En superficie rápida: párate cerca del saque, bloqueá con firmeza y buscá profundidad. No intentes winners en la devolución salvo saque muy lento.");
+if(clay&&!w2nd) serveReturn.push("En arcilla tenés tiempo: preparate temprano, metete hacia adentro y construí el punto desde la devolución con profundidad.");
+
+// Ajustes en vivo
+const obsTotal=Object.values(obs).reduce((a,b)=>a+b,0);
+if(obs.missBH>=2) inMatch.push(`REVÉS FRÁGIL CONFIRMADO (${obs.missBH} errores): cargá el 70% de tus peloteos a ese lado. Usá inside-out para llegar cómodo.`);
+if(obs.missFH>=2) inMatch.push(`DERECHA COMPROMETIDA (${obs.missFH} errores): atacá su derecha cuando esté corriendo o fuera de balance. Abrí con revés cruzado primero.`);
+if(obs.weak2nd>=2) inMatch.push(`2DO SAQUE REGALADO (${obs.weak2nd} veces): avanzá más en la devolución y atacá siempre. Es un punto casi gratis.`);
+if(obs.hatesNet>=2) inMatch.push(`EVITA LA RED (${obs.hatesNet} veces): usá dejadas y approachs cortos para obligarlo a subir donde es incómodo. Si sube, pasa cruzado bajo.`);
+if(obs.strugglesHigh>=2) inMatch.push(`SUFRE BOLAS ALTAS (${obs.strugglesHigh} veces): aumentá el topspin y la altura. En arcilla esto es devastador.`);
+if(obs.slowMove>=2) inMatch.push(`MOVILIDAD LIMITADA (${obs.slowMove} veces): combinación dejada + fondo. Alterná: 3 pelotas largas → dejada → cuando intente llegar, pelota larga al otro lado.`);
+if(obs.tightPressure>=2) inMatch.push(`SE TENSA BAJO PRESIÓN (${obs.tightPressure} veces): buscá llegar al 30-30 en cada game y subí el ritmo exactamente ahí. En break points, pelota al centro: que decida él.`);
+if(obs.shortBall>=2) inMatch.push(`PELOTAS CORTAS FRECUENTES (${obs.shortBall} veces): en cuanto la pelota caiga corta, avanzá con decisión y atacá cruzado o al hueco sin dudar.`);
+if(obs.missBH>=2&&obs.weak2nd>=2) inMatch.push("COMBO LETAL: revés débil + 2do saque flojo. En cada devolución de segundo saque, atacá directo a su revés.");
+if(obs.slowMove>=2&&obs.hatesNet>=2) inMatch.push("COMBO MOVIMIENTO+RED: es lento Y evita la red. La dejada es casi punto ganado. Hacé 3-4 por set sin abusar.");
+if(obs.tightPressure>=2&&obs.missBH>=2) inMatch.push("COMBO PRESIÓN+REVÉS: en break point, primera pelota siempre al revés. Él ya está tenso y su revés falla.");
+if(obsTotal===0){
+inMatch.push("Sin observaciones aún. Durante el partido pulsá los botones cada vez que el rival muestre un patrón.");
+inMatch.push("Mirá: ¿De qué lado comete más errores? ¿Cómo devuelve el segundo saque? ¿Sube a la red o siempre queda atrás?");
+}
+
+// Mental
+if(sMnd) mental.push("Tu mentalidad es una fortaleza: en los momentos difíciles, respirá, volvé a tu juego base y confiá en lo que entrenaste.");
+if(wPrs) mental.push("El rival se tensa: en los momentos importantes, jugá sin apuro. Pelota adentro, consistencia y dejá que él cometa el error.");
+mental.push("Rutina entre puntos: 1) girá y mirá las cuerdas, 2) elegí el próximo punto tácticamente, 3) respiración profunda, 4) bouncing y enfocate.");
+
+return{plan:uniq(plan),patterns:uniq(patterns),serveReturn:uniq(serveReturn),inMatch:uniq(inMatch),mental:uniq(mental)};
+}
+
+/* ── AI Panel ── */
+const AI_MODES=[{id:"pre",icon:"📋",label:"Plan pre-partido"},{id:"live",icon:"⚡",label:"Ajuste en partido"},{id:"mental",icon:"🧠",label:"Mentalidad"}];
+function AIPanel({profile,onAdvice}){
+const [loading,setLoading]=useState(false);
+const [advice,setAdvice]=useState(profile.aiAdvice||null);
+const [mode,setMode]=useState("pre");
+const [apiKey,setApiKey]=useState(()=>localStorage.getItem("cti_apikey")||"");
+const [showKey,setShowKey]=useState(!localStorage.getItem("cti_apikey"));
+const [customQ,setCustomQ]=useState("");
+const saveKey=()=>{localStorage.setItem("cti_apikey",apiKey);setShowKey(false);};
+const buildPrompt=()=>{
+const obsActive=OBS.filter(o=>profile.obs[o.key]>=1).map(o=>`${o.label}: ${profile.obs[o.key]}x`).join(", ");
+const sets=(profile.score?.sets||[]).map(s=>`${s.my}-${s.opp}`).join(" | ")||"Sin sets";
+const cur=profile.score?.current||{my:0,opp:0};
+const base=`Eres un coach profesional de tenis. Jugador: mano ${profile.myHand}, estilo ${profile.myStyle}, nivel ${profile.myLevel}, fortalezas: ${profile.myStrengths.join(", ")}. Rival${profile.oppName?" ("+profile.oppName+")":""}: mano ${profile.oppHand}, estilo ${profile.oppStyle}, nivel ${profile.oppLevel}, debilidades: ${profile.oppWeak.join(", ")}. Superficie: ${profile.surface}.${profile.tournament?" Torneo: "+profile.tournament+".":""}`;
+if(customQ) return`${base} Responde esta pregunta de forma directa y práctica (máx 250 palabras): "${customQ}"`;
+if(mode==="pre") return`${base} Dame un plan táctico DETALLADO. Incluye: 1) Estrategia principal, 2) Patrones tácticos específicos con secuencia de golpes, 3) Plan de saque y devolución con zonas concretas, 4) Ajustes por superficie (${profile.surface}), 5) Qué hacer en puntos importantes, 6) Frase motivacional. Sé específico y directo. Máx 400 palabras.`;
+if(mode==="live") return`${base} Situación actual: sets ${sets}, game actual ${cur.my}-${cur.opp}, observaciones en vivo: ${obsActive||"ninguna"}, notas: ${profile.notes||"ninguna"}. Dame: 1) Ajuste táctico INMEDIATO, 2) Patrón concreto para explotar lo observado, 3) Consejo mental para este momento, 4) Instrucción para el próximo game. Máx 200 palabras.`;
+return`${base} Dame un protocolo mental completo: 1) Rutina pre-partido, 2) Rutina entre puntos (25 segundos), 3) Cómo gestionar errores, 4) Cómo gestionar presión (3-5, break point), 5) Frase ancla. Máx 300 palabras.`;
+};
+const fetchAdvice=async()=>{
+if(!apiKey){setShowKey(true);return;}
+setLoading(true);setAdvice(null);
+try{
+const res=await fetch("https://api.anthropic.com/v1/messages",{
+method:"POST",
+headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:buildPrompt()}]}),
+});
+const data=await res.json();
+if(data.error){setAdvice("Error de API: "+data.error.message);setLoading(false);return;}
+const text=data.content?.map(c=>c.text||"").join("")||"Sin respuesta";
+setAdvice(text);onAdvice(text);
+}catch(err){setAdvice("Error de conexión. Verifica tu API key.");}
+setLoading(false);
+};
+const renderAdvice=(text)=>text.split("\n").map((line,i)=>{
+if(!line.trim())return null;
+const clean=line.replace(/\*\*/g,"");
+if(/^\d+[\.\)]/.test(line)) return<p key={i} style={{fontSize:13,marginBottom:6,paddingLeft:4,color:"#1e1b4b"}}>{clean}</p>;
+if(line.startsWith("-")||line.startsWith("•")) return<p key={i} style={{fontSize:13,marginBottom:5,paddingLeft:12,color:"#312e81",display:"flex",gap:6}}><span style={{color:"#7c3aed",flexShrink:0}}>›</span><span>{clean.replace(/^[-•]\s*/,"")}</span></p>;
+return<p key={i} style={{fontSize:13,marginBottom:6,color:"#1e1b4b"}}>{clean}</p>;
+});
+return(
+<div style={{display:"flex",flexDirection:"column",gap:12}}>
+{showKey&&(
+<Card style={{border:"1.5px solid #e0e7ff",background:"#f5f3ff"}}>
+<STitle>🔑 API Key de Anthropic</STitle>
+<p style={{fontSize:12,color:"#6b7280",marginBottom:10}}>Necesitás tu API key para usar el Coach IA. Se guarda solo en tu dispositivo.</p>
+<div style={{display:"flex",gap:8}}>
+<input style={{...S.input,flex:1}} type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-api03-..."/>
+<Btn onClick={saveKey} variant="ai" size="sm">Guardar</Btn>
+</div>
+<p style={{fontSize:11,color:"#9ca3af",marginTop:8}}>Obtené tu key en <a href="https://console.anthropic.com" target="_blank" style={{color:"#7c3aed"}}>console.anthropic.com</a></p>
+</Card>
+)}
+<Card>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+<STitle>Consulta al Coach IA</STitle>
+{!showKey&&<button onClick={()=>setShowKey(true)} style={{fontSize:11,color:"#94a3b8",cursor:"pointer"}}>cambiar key</button>}
+</div>
+<div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+{AI_MODES.map(m=>(
+<button key={m.id} onClick={()=>setMode(m.id)}
+style={{border:`1.5px solid ${mode===m.id?"#7c3aed":"#e2e8f0"}`,borderRadius:10,padding:"7px 12px",fontSize:12,fontWeight:500,cursor:"pointer",background:mode===m.id?"#f5f3ff":"#fff",color:mode===m.id?"#6d28d9":"#64748b",display:"flex",alignItems:"center",gap:5}}>
+{m.icon} {m.label}
+</button>
+))}
+</div>
+<div style={{marginBottom:10}}>
+<Label>Pregunta libre (opcional)</Label>
+<input style={S.input} value={customQ} onChange={e=>setCustomQ(e.target.value)} placeholder="¿Cómo ataco su revés en arcilla con topspin?"/>
+</div>
+<Btn onClick={fetchAdvice} variant="ai" disabled={loading} style={{width:"100%"}}>
+{loading?<><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>⟳</span> Analizando...</>:<>✦ Pedir consejo al Coach IA</>}
+</Btn>
+</Card>
+{advice&&(
+<Card style={{background:"linear-gradient(135deg,#f5f3ff,#eef2ff)",border:"1px solid #e0e7ff"}}>
+<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+<div style={{width:28,height:28,borderRadius:"50%",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,flexShrink:0}}>✦</div>
+<span style={{fontSize:13,fontWeight:600,color:"#4c1d95"}}>Análisis del Coach IA</span>
+<Chip color="blue">{AI_MODES.find(m=>m.id===mode)?.label||"Consulta libre"}</Chip>
+</div>
+<div style={{lineHeight:1.6}}>{renderAdvice(advice)}</div>
+</Card>
+)}
+</div>
+);
+}
+
+/* ── History Panel ── */
+function HistoryPanel({matches,onLoad,onDelete,loading}){
+if(loading) return<Card style={{textAlign:"center",padding:32}}><div style={{fontSize:13,color:"#94a3b8"}}>Cargando historial...</div></Card>;
+if(!matches.length) return(
+<Card style={{textAlign:"center",padding:"48px 16px"}}>
+<div style={{fontSize:36,marginBottom:8}}>🎾</div>
+<div style={{fontSize:13,color:"#94a3b8"}}>No hay partidos guardados aún.</div>
+</Card>
+);
+return(
+<div style={{display:"flex",flexDirection:"column",gap:10}}>
+{matches.map((m,i)=>{
+const sets=m.score?.sets||[];
+const myW=sets.filter(s=>s.winner==="my").length,opW=sets.filter(s=>s.winner==="opp").length;
+const setStr=sets.map(s=>`${s.my}-${s.opp}`).join("  ")||"—";
+return(
+<Card key={m.id||i}>
+<div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8}}>
+<div style={{flex:1,minWidth:0}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}>
+<span style={{fontWeight:600,fontSize:14}}>{m.oppName||"Rival desconocido"}</span>
+<Chip color={myW>opW?"green":opW>myW?"red":"gray"}>{myW>opW?"Victoria":opW>myW?"Derrota":"Sin resultado"}</Chip>
+{m.aiAdvice&&<Chip color="blue">✦ IA</Chip>}
+</div>
+<div style={{fontSize:11,color:"#94a3b8",marginBottom:4}}>{m.date} · {m.surface}{m.tournament?" · "+m.tournament:""}</div>
+<div className="mono" style={{fontSize:13,color:"#475569"}}>{setStr}</div>
+</div>
+<div style={{display:"flex",gap:4,flexShrink:0}}>
+<Btn onClick={()=>onLoad(m)} variant="outline" size="sm">Cargar</Btn>
+<Btn onClick={()=>onDelete(m.id||i)} variant="ghost" size="sm">×</Btn>
+</div>
+</div>
+</Card>
+);
+})}
+</div>
+);
+}
+
+/* ── Main App ── */
+function App(){
+const [user,setUser]=useState(null);
+const [authLoading,setAuthLoading]=useState(true);
+const [tab,setTab]=useState(0);
+const [profile,setProfile]=useState(defProfile);
+const [matches,setMatches]=useState([]);
+const [matchesLoading,setMatchesLoading]=useState(false);
+const [savedFl,setSavedFl]=useState(false);
+const [syncStatus,setSyncStatus]=useState(""); // "saving" | "saved" | "error"
+
+// Chequear sesión al cargar
+useEffect(()=>{
+sb.auth.getSession().then(({data:{session}})=>{
+setUser(session?.user||null);
+setAuthLoading(false);
+});
+const {data:{subscription}}=sb.auth.onAuthStateChange((_,session)=>{
+setUser(session?.user||null);
+});
+return()=>subscription.unsubscribe();
+},[]);
+
+// Cargar historial cuando hay usuario
+useEffect(()=>{
+if(!user) return;
+loadMatches();
+},[user]);
+
+const loadMatches=async()=>{
+setMatchesLoading(true);
+const {data,error}=await sb.from("matches").select("*").eq("user_id",user.id).order("created_at",{ascending:false}).limit(50);
+if(!error&&data) setMatches(data.map(r=>({...r,...(r.data||{}),id:r.id})));
+setMatchesLoading(false);
+};
+
+const set=(key)=>(val)=>setProfile(p=>({...p,[key]:val}));
+
+const saveMatch=async()=>{
+setSyncStatus("saving");
+const payload={
+user_id:user.id,
+opp_name:profile.oppName||"Rival",
+surface:profile.surface,
+tournament:profile.tournament||null,
+round:profile.round||null,
+my_level:profile.myLevel,
+opp_level:profile.oppLevel,
+my_style:profile.myStyle,
+opp_style:profile.oppStyle,
+sets_won:(profile.score?.sets||[]).filter(s=>s.winner==="my").length,
+sets_lost:(profile.score?.sets||[]).filter(s=>s.winner==="opp").length,
+obs_data:profile.obs,
+date:profile.date,
+data:profile, // guarda el perfil completo para poder recargarlo
+};
+const {error}=await sb.from("matches").insert(payload);
+if(error){setSyncStatus("error");setTimeout(()=>setSyncStatus(""),3000);return;}
+setSyncStatus("saved");
+setSavedFl(true);
+setTimeout(()=>{setSavedFl(false);setSyncStatus("");},2500);
+loadMatches();
+};
+
+const deleteMatch=async(id)=>{
+await sb.from("matches").delete().eq("id",id).eq("user_id",user.id);
+setMatches(m=>m.filter(x=>x.id!==id));
+};
+
+const advice=useMemo(()=>buildAdvice(profile),[
+profile.myHand,profile.myStyle,profile.myStrengths,profile.myLevel,
+profile.oppHand,profile.oppStyle,profile.oppWeak,profile.oppLevel,
+profile.surface,profile.obs,
+]);
+
+const totalObs=Object.values(profile.obs).reduce((a,b)=>a+b,0);
+
+if(authLoading) return(
+<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+<div style={{fontSize:13,color:"#94a3b8"}}>Cargando...</div>
+</div>
+);
+
+if(!user) return <AuthScreen onAuth={setUser}/>;
+
+const userName=user.user_metadata?.full_name||user.email?.split("@")[0]||"Jugador";
+
+return(
+<div style={{background:"#f1f5f9",minHeight:"100vh",fontFamily:"'DM Sans',sans-serif"}}>
+<style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+{/* Header */}
+<div style={{position:"sticky",top:0,zIndex:100,background:"rgba(255,255,255,0.97)",backdropFilter:"blur(12px)",borderBottom:"1px solid #e2e8f0"}}>
+<div style={{maxWidth:720,margin:"0 auto",padding:"0 16px"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 0"}}>
+<div style={{display:"flex",alignItems:"center",gap:10}}>
+<div style={{width:34,height:34,borderRadius:10,background:"#0f172a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🎾</div>
+<div>
+<div style={{fontSize:14,fontWeight:700,lineHeight:1.1}}>CoachTennis IA</div>
+<div style={{fontSize:10,color:"#94a3b8"}}>Hola, {userName}</div>
+</div>
+</div>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+{syncStatus==="saving"&&<span style={{fontSize:11,color:"#94a3b8"}}>Guardando...</span>}
+{syncStatus==="saved"&&<span style={{fontSize:11,color:"#059669"}}>✓ Guardado</span>}
+{syncStatus==="error"&&<span style={{fontSize:11,color:"#dc2626"}}>Error al guardar</span>}
+<Btn onClick={saveMatch} variant={savedFl?"green":"outline"} size="sm" disabled={syncStatus==="saving"}>
+{savedFl?"✓ Guardado":"Guardar partido"}
+</Btn>
+<Btn onClick={()=>sb.auth.signOut()} variant="ghost" size="sm">Salir</Btn>
+</div>
+</div>
+{/* Tabs */}
+<div style={{display:"flex",borderTop:"1px solid #f1f5f9",margin:"0 -16px",padding:"0 16px"}}>
+{TABS.map((t,i)=>(
+<button key={t} onClick={()=>setTab(i)}
+style={{flex:1,padding:"10px 0",fontSize:12,fontWeight:tab===i?600:400,color:tab===i?"#0f172a":"#94a3b8",background:"none",border:"none",
+borderBottom:`2px solid ${tab===i?"#0f172a":"transparent"}`,cursor:"pointer",transition:"all .15s",position:"relative"}}>
+{t}
+{i===1&&totalObs>0&&(
+<span style={{position:"absolute",top:6,right:4,width:14,height:14,borderRadius:"50%",background:"#ef4444",color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{totalObs}</span>
+)}
+</button>
+))}
+</div>
+</div>
+</div>
+
+{/* Content */}
+<div style={{maxWidth:720,margin:"0 auto",padding:"12px 12px 80px"}}>
+
+{/* TAB 0: Preparación */}
+{tab===0&&(
+<div style={{display:"flex",flexDirection:"column",gap:12}}>
+<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12}}>
+<Card>
+<STitle>Mi perfil</STitle>
+<div style={{display:"flex",flexDirection:"column",gap:10}}>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+<SelectF label="Mano" value={profile.myHand} setValue={set("myHand")} options={HANDS}/>
+<SelectF label="Nivel" value={profile.myLevel} setValue={set("myLevel")} options={LEVELS}/>
+</div>
+<SelectF label="Estilo de juego" value={profile.myStyle} setValue={set("myStyle")} options={STYLES}/>
+<Field label="Fortalezas"><MultiCheck options={STRENGTHS} values={profile.myStrengths} onChange={set("myStrengths")}/></Field>
+</div>
+</Card>
+<Card>
+<STitle>Perfil del rival</STitle>
+<div style={{display:"flex",flexDirection:"column",gap:10}}>
+<InputF label="Nombre del rival" value={profile.oppName} onChange={set("oppName")} placeholder="Nombre / Apodo"/>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+<SelectF label="Mano" value={profile.oppHand} setValue={set("oppHand")} options={HANDS}/>
+<SelectF label="Nivel" value={profile.oppLevel} setValue={set("oppLevel")} options={LEVELS}/>
+</div>
+<SelectF label="Estilo de juego" value={profile.oppStyle} setValue={set("oppStyle")} options={STYLES}/>
+<Field label="Debilidades conocidas"><MultiCheck options={WEAKNESSES} values={profile.oppWeak} onChange={set("oppWeak")}/></Field>
+</div>
+</Card>
+</div>
+<Card>
+<STitle>Contexto del partido</STitle>
+<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10}}>
+<SelectF label="Superficie" value={profile.surface} setValue={set("surface")} options={SURFACES}/>
+<InputF label="Torneo / Liga" value={profile.tournament} onChange={set("tournament")} placeholder="ITF, Liga..."/>
+<InputF label="Ronda" value={profile.round} onChange={set("round")} placeholder="1R, SF, F..."/>
+</div>
+</Card>
+<Card>
+<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+<STitle>Plan táctico</STitle>
+<Chip>Sin IA · actualiza en tiempo real</Chip>
+</div>
+<div style={{display:"flex",flexDirection:"column",gap:16}}>
+{[
+{title:"Estrategia principal",items:advice.plan,color:"#0f172a"},
+{title:"Patrones tácticos concretos",items:advice.patterns,color:"#1d4ed8"},
+{title:"Saque y devolución",items:advice.serveReturn,color:"#059669"},
+{title:"Ajustes en partido",items:advice.inMatch,color:"#d97706"},
+{title:"Mentalidad",items:advice.mental,color:"#7c3aed"},
+].map(({title,items,color})=>(
+<div key={title} style={{borderLeft:`3px solid ${color}25`,paddingLeft:12}}>
+<div style={{fontSize:11,fontWeight:700,color,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>{title}</div>
+{items&&items.length?items.map((item,i)=>{
+const colonIdx=item.indexOf(":");
+const hasHeader=colonIdx>0&&colonIdx<30&&item===item.toUpperCase().slice(0,colonIdx)+item.slice(colonIdx);
+return(
+<div key={i} style={{display:"flex",gap:8,marginBottom:8,fontSize:13,color:"#334155",alignItems:"flex-start"}}>
+<span style={{color,flexShrink:0,marginTop:2,fontSize:11}}>›</span>
+<span style={{lineHeight:1.5}}>
+{hasHeader?<><strong style={{color:"#0f172a",fontWeight:600}}>{item.slice(0,colonIdx+1)}</strong>{item.slice(colonIdx+1)}</>:item}
+</span>
+</div>
+);
+}):<span style={{fontSize:12,color:"#cbd5e1",fontStyle:"italic"}}>Completá el perfil para ver recomendaciones</span>}
+</div>
+))}
+</div>
+</Card>
+</div>
+)}
+
+{/* TAB 1: En partido */}
+{tab===1&&(
+<div style={{display:"flex",flexDirection:"column",gap:12}}>
+<Card>
+<STitle>Marcador en vivo</STitle>
+<ScoreTracker score={profile.score} setScore={set("score")}/>
+</Card>
+<Card>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+<STitle>Observaciones rápidas</STitle>
+<Btn onClick={()=>set("obs")(emptyObs())} variant="ghost" size="sm">↺ Reiniciar</Btn>
+</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8}}>
+{OBS.map(({key,label,icon})=>(
+<button key={key} onClick={()=>set("obs")({...profile.obs,[key]:profile.obs[key]+1})}
+style={{border:`1.5px solid ${profile.obs[key]>0?"#fbbf24":"#e2e8f0"}`,borderRadius:12,padding:"10px 12px",textAlign:"left",cursor:"pointer",
+background:profile.obs[key]>0?"#fffbeb":"#fff",transition:"all .15s",display:"flex",flexDirection:"column",gap:4,userSelect:"none"}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<span style={{fontSize:16,color:"#64748b"}}>{icon}</span>
+<span style={{fontSize:20,fontWeight:700,color:profile.obs[key]>0?"#d97706":"#e2e8f0",fontFamily:"'DM Mono',monospace"}}>{profile.obs[key]}</span>
+</div>
+<span style={{fontSize:12,color:"#64748b",lineHeight:1.2}}>{label}</span>
+</button>
+))}
+</div>
+</Card>
+<Card>
+<STitle>Notas rápidas</STitle>
+<textarea style={{...S.input,minHeight:80}} value={profile.notes} onChange={e=>set("notes")(e.target.value)}
+placeholder="Notas del partido: situaciones clave, comportamiento del rival, ajustes..."/>
+</Card>
+<Card style={{background:"#fffbeb",border:"1px solid #fde68a"}}>
+<div style={{fontSize:11,fontWeight:700,color:"#b45309",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:10}}>Recordatorio táctico</div>
+{advice.inMatch.map((item,i)=>(
+<div key={i} style={{display:"flex",gap:6,marginBottom:7,fontSize:13,color:"#92400e"}}>
+<span style={{color:"#fbbf24",flexShrink:0}}>›</span><span>{item}</span>
+</div>
+))}
+</Card>
+</div>
+)}
+
+{/* TAB 2: Coach IA */}
+{tab===2&&<AIPanel profile={profile} onAdvice={a=>set("aiAdvice")(a)}/>}
+
+{/* TAB 3: Historial */}
+{tab===3&&(
+<div style={{display:"flex",flexDirection:"column",gap:10}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 4px"}}>
+<span style={{fontSize:12,color:"#94a3b8"}}>{matches.length} partido{matches.length!==1?"s":""} guardado{matches.length!==1?"s":""}</span>
+<a href="dashboard.html" target="_blank"
+style={{fontSize:12,color:"#7c3aed",textDecoration:"none",fontWeight:500,display:"flex",alignItems:"center",gap:4}}>
+📊 Ver estadísticas →
+</a>
+</div>
+<HistoryPanel matches={matches} loading={matchesLoading}
+onLoad={m=>{setProfile(m.data||m);setTab(0);}}
+onDelete={deleteMatch}/>
+</div>
+)}
+</div>
+
+<div style={{position:"fixed",bottom:0,left:0,right:0,background:"rgba(255,255,255,0.95)",backdropFilter:"blur(10px)",borderTop:"1px solid #e2e8f0",padding:"8px 16px",textAlign:"center",fontSize:10,color:"#cbd5e1"}}>
+CoachTennis IA · Complementa, no reemplaza, el criterio de un entrenador 🎾
+</div>
+</div>
+);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
