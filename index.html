@@ -31,8 +31,8 @@ const {useState,useMemo,useEffect,useRef} = React;
    ⚙️  CONFIGURACIÓN — reemplazá estos dos valores
    con los de tu proyecto Supabase
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const SUPABASE_URL  = "https://igqlsofrczrydllubhwq.supabase.co";
-const SUPABASE_ANON = "sb_publishable_RHmTWwyUrzbrELMG5ibz0A_lduESQyc";
+const SUPABASE_URL  = "https://TU_PROYECTO.supabase.co";
+const SUPABASE_ANON = "TU_ANON_KEY";
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
@@ -204,67 +204,266 @@ function AuthScreen({onAuth}){
 }
 
 /* ── Score Tracker ── */
-const PTS=["0","15","30","40","Ad"];
+const PTS=["0","15","30","40"];
+
+// Determina el ganador de un set según los juegos
+function setWinner(my,opp){
+  if(my>=6&&my-opp>=2) return "my";
+  if(opp>=6&&opp-my>=2) return "opp";
+  if(my===7) return "my";
+  if(opp===7) return "opp";
+  return null; // set no terminado
+}
+
 function ScoreTracker({score,setScore}){
-  const [game,setGame]=useState({my:0,opp:0});
-  const [serving,setServing]=useState("my");
+  // Todo el estado vive junto para evitar desyncs en re-renders
+  const [pts,setPts]   = useState({my:0,opp:0});   // puntos en el juego actual
+  const [serving,setServing] = useState("my");
+  const [mode,setMode] = useState("live");          // "live" | "manual"
+  // Para entrada manual de set
+  const [manualMy,setManualMy]   = useState("");
+  const [manualOpp,setManualOpp] = useState("");
+  const [manualErr,setManualErr] = useState("");
+
+  const sets  = score.sets    || [];
+  const games = score.current || {my:0, opp:0};
+
+  /* ── Etiqueta de puntos (deuce/ventaja) ── */
   const ptLabel=(side)=>{
-    const me=side==="my"?game.my:game.opp, them=side==="my"?game.opp:game.my;
-    if(me<3||them<3)return PTS[me]||"0";
-    if(me===them)return "40";
-    return me>them?(side==="my"?"Ad":""):(side==="my"?"":"Ad");
+    const me   = side==="my"  ? pts.my  : pts.opp;
+    const them = side==="my"  ? pts.opp : pts.my;
+    if(me<3||them<3) return PTS[me]||"0";
+    if(me===them)    return "40";           // deuce
+    return me>them
+      ? (side==="my" ?"Ad":"")
+      : (side==="my" ?""  :"Ad");
   };
+
+  /* ── Ganar un juego → actualizar games → chequear set ── */
   const winGame=(who)=>{
-    const other=who==="my"?"opp":"my";
-    const cur={...(score.current||{my:0,opp:0})};
-    cur[who]=(cur[who]||0)+1;
-    const w=cur[who],l=cur[other]||0;
-    setGame({my:0,opp:0});
+    const other = who==="my"?"opp":"my";
+    const newGames = {
+      my : games.my  + (who==="my"  ? 1 : 0),
+      opp: games.opp + (who==="opp" ? 1 : 0),
+    };
+    setPts({my:0,opp:0});
     setServing(s=>s==="my"?"opp":"my");
-    if((w>=6&&w-l>=2)||w===7){
-      setScore(prev=>({...prev,sets:[...(prev.sets||[]),{my:cur.my,opp:cur.opp,winner:who}],current:{my:0,opp:0}}));
+
+    const winner = setWinner(newGames.my, newGames.opp);
+    if(winner){
+      // set terminado → empujamos al array y reseteamos games
+      setScore(prev=>({
+        ...prev,
+        sets:[...(prev.sets||[]),{my:newGames.my,opp:newGames.opp,winner}],
+        current:{my:0,opp:0},
+      }));
     } else {
-      setScore(prev=>({...prev,current:cur}));
+      setScore(prev=>({...prev,current:newGames}));
     }
   };
+
+  /* ── Sumar punto ── */
   const awardPoint=(who)=>{
-    const myP=who==="my"?game.my+1:game.my, opP=who==="opp"?game.opp+1:game.opp;
-    const deuce=myP>=3&&opP>=3, diff=myP-opP;
-    if(deuce&&Math.abs(diff)>=2){winGame(diff>0?"my":"opp");return;}
-    if(!deuce&&(myP>=4||opP>=4)){winGame(myP>opP?"my":"opp");return;}
-    setGame({my:myP,opp:opP});
+    const myP  = pts.my  + (who==="my"  ? 1 : 0);
+    const opP  = pts.opp + (who==="opp" ? 1 : 0);
+    const deuce = myP>=3 && opP>=3;
+    const diff  = myP - opP;
+    // deuce: necesitás 2 de diferencia
+    if(deuce && Math.abs(diff)>=2){ winGame(diff>0?"my":"opp"); return; }
+    // sin deuce: 4 puntos ganan (0-1-2-3 índices → 4 = ganó)
+    if(!deuce && (myP>=4||opP>=4)){ winGame(myP>opP?"my":"opp"); return; }
+    setPts({my:myP,opp:opP});
   };
-  const sets=score.sets||[], cur=score.current||{my:0,opp:0};
+
+  /* ── Añadir set manualmente ── */
+  const addManualSet=()=>{
+    const my=parseInt(manualMy), opp=parseInt(manualOpp);
+    if(isNaN(my)||isNaN(opp)||my<0||opp<0||my>7||opp>7){
+      setManualErr("Ingresá juegos válidos (0–7)"); return;
+    }
+    const winner=setWinner(my,opp);
+    if(!winner){
+      setManualErr("Resultado inválido para un set (ej: 6-4, 7-5, 7-6)"); return;
+    }
+    setManualErr("");
+    setScore(prev=>({
+      ...prev,
+      sets:[...(prev.sets||[]),{my,opp,winner}],
+      current:{my:0,opp:0},
+    }));
+    setManualMy("");setManualOpp("");
+  };
+
+  /* ── Reset total ── */
+  const resetAll=()=>{
+    setScore(defScore());
+    setPts({my:0,opp:0});
+  };
+
+  /* ── Eliminar último set ── */
+  const removeLastSet=()=>{
+    setScore(prev=>({...prev,sets:(prev.sets||[]).slice(0,-1)}));
+  };
+
+  /* ── Resultado final calculado ── */
+  const mySetW  = sets.filter(s=>s.winner==="my").length;
+  const oppSetW = sets.filter(s=>s.winner==="opp").length;
+  const resultLabel = sets.length===0 ? null
+    : mySetW>oppSetW ? "Victoria 🏆"
+    : oppSetW>mySetW ? "Derrota"
+    : "Igualado";
+  const resultColor = mySetW>oppSetW?"#059669":oppSetW>mySetW?"#dc2626":"#d97706";
+
   return(
     <div>
+      {/* Modo selector */}
+      <div style={{display:"flex",gap:6,marginBottom:14}}>
+        {[{v:"live",l:"⏱ Punto a punto"},{v:"manual",l:"✏️ Ingresar sets"}].map(({v,l})=>(
+          <button key={v} onClick={()=>setMode(v)}
+            style={{padding:"6px 14px",fontSize:12,fontWeight:500,borderRadius:9,cursor:"pointer",border:"none",
+              background:mode===v?"#0f172a":"#e2e8f0",color:mode===v?"#fff":"#64748b"}}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {/* Sets jugados */}
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
+        {sets.length===0&&<span style={{fontSize:12,color:"#94a3b8"}}>Sin sets aún</span>}
         {sets.map((s,i)=>(
-          <div key={i} className="mono" style={{background:s.winner==="my"?"#dcfce7":"#fee2e2",borderRadius:8,padding:"4px 10px",fontSize:13,fontWeight:500,color:s.winner==="my"?"#166534":"#991b1b"}}>{s.my}–{s.opp}</div>
+          <div key={i} className="mono"
+            style={{background:s.winner==="my"?"#dcfce7":"#fee2e2",borderRadius:8,padding:"4px 12px",
+              fontSize:14,fontWeight:600,color:s.winner==="my"?"#166534":"#991b1b",
+              display:"flex",alignItems:"center",gap:6}}>
+            {s.my}–{s.opp}
+            <span style={{fontSize:10,color:s.winner==="my"?"#16a34a":"#b91c1c"}}>{s.winner==="my"?"(yo)":"(rival)"}</span>
+          </div>
         ))}
-        <div className="mono" style={{background:"#0f172a",color:"#fff",borderRadius:8,padding:"4px 10px",fontSize:13,fontWeight:500}}>{cur.my}–{cur.opp}</div>
-        {sets.length===0&&<span style={{fontSize:12,color:"#94a3b8"}}>Sin sets jugados</span>}
+        {/* Set en curso (modo live) */}
+        {mode==="live"&&(games.my>0||games.opp>0)&&(
+          <div className="mono" style={{background:"#0f172a",color:"#fff",borderRadius:8,padding:"4px 12px",fontSize:14,fontWeight:600}}>
+            {games.my}–{games.opp} <span style={{fontSize:10,opacity:.6}}>en curso</span>
+          </div>
+        )}
+        {sets.length>0&&(
+          <button onClick={removeLastSet}
+            style={{fontSize:11,color:"#94a3b8",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+            deshacer último
+          </button>
+        )}
       </div>
-      <div style={{display:"flex",alignItems:"center",gap:20,marginBottom:12}}>
-        {["my","opp"].map((side,i)=>(
-          <React.Fragment key={side}>
-            {i===1&&<span style={{color:"#cbd5e1",fontSize:22,alignSelf:"center",paddingBottom:24}}>–</span>}
-            <div style={{textAlign:"center"}}>
-              <div style={{fontSize:11,color:"#94a3b8",marginBottom:4,display:"flex",alignItems:"center",gap:4}}>
-                {side==="my"?"Yo":"Rival"}{serving===side&&<span style={{color:"#f59e0b",fontSize:9}}>●</span>}
-              </div>
-              <div className="mono" style={{fontSize:36,fontWeight:600,lineHeight:1,width:52,textAlign:"center"}}>{ptLabel(side)||<span style={{color:"#e2e8f0"}}>–</span>}</div>
-              <div style={{marginTop:6}}><Btn onClick={()=>awardPoint(side)} variant={side==="my"?"green":"danger"} size="sm">+1</Btn></div>
-            </div>
-          </React.Fragment>
-        ))}
-        <div style={{marginLeft:"auto",display:"flex",flexDirection:"column",gap:4}}>
-          <Btn onClick={()=>setGame({my:0,opp:0})} variant="ghost" size="sm">↺ Juego</Btn>
-          <Btn onClick={()=>{setScore(defScore());setGame({my:0,opp:0});}} variant="ghost" size="sm">↺ Set</Btn>
+
+      {/* Resultado final */}
+      {resultLabel&&(
+        <div style={{marginBottom:14,padding:"8px 14px",borderRadius:10,background:mySetW>oppSetW?"#dcfce7":oppSetW>mySetW?"#fee2e2":"#fef3c7",
+          display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span style={{fontSize:13,fontWeight:600,color:resultColor}}>{resultLabel}</span>
+          <span className="mono" style={{fontSize:13,color:resultColor}}>{mySetW} – {oppSetW} sets</span>
         </div>
-      </div>
-      <div style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"#94a3b8"}}>
-        Saque: <Btn onClick={()=>setServing(s=>s==="my"?"opp":"my")} variant="outline" size="sm">{serving==="my"?"Yo sirvo →":"← Rival sirve"}</Btn>
-      </div>
+      )}
+
+      {/* ── MODO LIVE: punto a punto ── */}
+      {mode==="live"&&(
+        <>
+          {/* Juegos del set actual */}
+          <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:16,padding:"12px 14px",background:"#f8fafc",borderRadius:12,border:"1px solid #e2e8f0"}}>
+            <div style={{fontSize:11,color:"#94a3b8",fontWeight:600,flexShrink:0}}>JUEGOS SET</div>
+            <div style={{display:"flex",alignItems:"center",gap:12,flex:1,justifyContent:"center"}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:10,color:"#94a3b8",marginBottom:2}}>Yo</div>
+                <div className="mono" style={{fontSize:28,fontWeight:700,color:"#059669",lineHeight:1}}>{games.my}</div>
+              </div>
+              <div style={{color:"#cbd5e1",fontSize:18}}>–</div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:10,color:"#94a3b8",marginBottom:2}}>Rival</div>
+                <div className="mono" style={{fontSize:28,fontWeight:700,color:"#dc2626",lineHeight:1}}>{games.opp}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Puntos del juego actual */}
+          <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:14}}>
+            {["my","opp"].map((side,i)=>(
+              <React.Fragment key={side}>
+                {i===1&&<div style={{color:"#cbd5e1",fontSize:20,alignSelf:"center",paddingBottom:28}}>–</div>}
+                <div style={{textAlign:"center",flex:1}}>
+                  <div style={{fontSize:11,color:"#94a3b8",marginBottom:4,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                    {side==="my"?"Yo":"Rival"}
+                    {serving===side&&<span style={{color:"#f59e0b",fontSize:9,fontWeight:700}}>● sirve</span>}
+                  </div>
+                  <div className="mono" style={{fontSize:38,fontWeight:700,lineHeight:1,
+                    color:side==="my"?"#059669":"#dc2626",
+                    minHeight:46,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    {ptLabel(side)||<span style={{color:"#e2e8f0"}}>0</span>}
+                  </div>
+                  <div style={{marginTop:8}}>
+                    <Btn onClick={()=>awardPoint(side)} variant={side==="my"?"green":"danger"} size="md"
+                      style={{width:"100%",maxWidth:100}}>
+                      + Punto
+                    </Btn>
+                  </div>
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+
+          {/* Controles */}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+            <div style={{fontSize:12,color:"#94a3b8",marginRight:2}}>Saque:</div>
+            <Btn onClick={()=>setServing(s=>s==="my"?"opp":"my")} variant="outline" size="sm">
+              {serving==="my"?"Yo sirvo ↔":"Rival sirve ↔"}
+            </Btn>
+            <div style={{flex:1}}/>
+            <Btn onClick={()=>setPts({my:0,opp:0})} variant="ghost" size="sm">↺ Puntos</Btn>
+            <Btn onClick={()=>{setScore(prev=>({...prev,current:{my:0,opp:0}}));setPts({my:0,opp:0});}} variant="ghost" size="sm">↺ Juegos</Btn>
+            <Btn onClick={resetAll} variant="ghost" size="sm" style={{color:"#ef4444"}}>↺ Todo</Btn>
+          </div>
+        </>
+      )}
+
+      {/* ── MODO MANUAL: ingresar sets ── */}
+      {mode==="manual"&&(
+        <div>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
+            Ingresá el resultado de cada set jugado (ej: tus juegos → 6, rival → 4)
+          </div>
+          <div style={{display:"flex",alignItems:"flex-end",gap:8,marginBottom:8}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",marginBottom:4}}>YO (juegos)</div>
+              <input type="number" min="0" max="7" value={manualMy}
+                onChange={e=>setManualMy(e.target.value)}
+                style={{width:"100%",border:"1.5px solid #e2e8f0",borderRadius:10,padding:"10px 12px",
+                  fontSize:20,fontWeight:700,textAlign:"center",color:"#059669",outline:"none",fontFamily:"DM Mono,monospace"}}
+                placeholder="0"/>
+            </div>
+            <div style={{fontSize:20,color:"#cbd5e1",paddingBottom:10,flexShrink:0}}>–</div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",marginBottom:4}}>RIVAL (juegos)</div>
+              <input type="number" min="0" max="7" value={manualOpp}
+                onChange={e=>setManualOpp(e.target.value)}
+                style={{width:"100%",border:"1.5px solid #e2e8f0",borderRadius:10,padding:"10px 12px",
+                  fontSize:20,fontWeight:700,textAlign:"center",color:"#dc2626",outline:"none",fontFamily:"DM Mono,monospace"}}
+                placeholder="0"/>
+            </div>
+            <Btn onClick={addManualSet} variant="default" size="md" style={{flexShrink:0,paddingLeft:20,paddingRight:20}}>
+              + Agregar set
+            </Btn>
+          </div>
+          {manualErr&&(
+            <div style={{fontSize:12,color:"#dc2626",background:"#fee2e2",padding:"7px 10px",borderRadius:8,marginBottom:8}}>
+              {manualErr}
+            </div>
+          )}
+          <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>
+            Sets válidos: 6-0, 6-1, 6-2, 6-3, 6-4, 7-5, 7-6 (o invertidos)
+          </div>
+          {sets.length>0&&(
+            <Btn onClick={resetAll} variant="ghost" size="sm" style={{marginTop:12,color:"#ef4444"}}>
+              ↺ Borrar todos los sets
+            </Btn>
+          )}
+        </div>
+      )}
     </div>
   );
 }
